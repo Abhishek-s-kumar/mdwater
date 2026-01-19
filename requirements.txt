@@ -1,0 +1,11 @@
+# PDF Processing - Core library for reading, writing, and merging PDFs
+PyPDF2==3.0.1
+
+# Watermark Generation - Canvas drawing for creating transparent watermark overlays
+reportlab==4.4.9
+
+# Image Processing - Required dependency for reportlab's rendering
+Pillow>=9.0.0
+
+# Text Encoding - Ensures proper character encoding handling
+charset-normalizer>=3.0.0
