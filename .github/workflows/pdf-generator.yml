@@ -22,11 +22,6 @@ on:
         description: 'Specific .md files (comma-separated, e.g., doc/guide.md, doc/api.md)'
         required: false
         type: string
-      watermark_text:
-        description: 'Custom watermark text (leave empty for default: username + timestamp)'
-        required: false
-        default: ''
-        type: string
 
 jobs:
   generate-pdf:
@@ -35,97 +30,119 @@ jobs:
       contents: write
     
     steps:
-    - name:  Checkout repository
+    - name: 📥 Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # Get all history for file comparisons
+        fetch-depth: 0
     
-    - name:  Setup Python
+    - name: 🐍 Setup Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
     
-    - name:  Install dependencies
+    - name: 📦 Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-latex-extra
         pip install PyPDF2 reportlab
     
-    - name:  Detect changed .md files (for push events)
-      id: detect_changes
-      if: github.event_name == 'push'
+    - name: 🔍 Detect files to process
+      id: detect_files
       run: |
-        # Get list of changed .md files in doc directory
-        echo "Previous commit: ${{ github.event.before }}"
-        echo "Current commit: ${{ github.sha }}"
+        echo "Event: ${{ github.event_name }}"
+        echo "Scope: ${{ github.event.inputs.generation_scope }}"
         
-        # Get changed files using git diff
-        CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} -- 'doc/**/*.md' 2>/dev/null || git diff --name-only HEAD~1 HEAD -- 'doc/**/*.md')
-        
-        if [ -z "$CHANGED_FILES" ]; then
-          echo "No .md files changed in doc directory"
-          echo "changed_files_json=[]" >> $GITHUB_OUTPUT
+        # For push events, find changed .md files
+        if [ "${{ github.event_name }}" = "push" ]; then
+          echo "Push event - detecting changed .md files"
+          # Get the previous commit
+          PREV_COMMIT="${{ github.event.before }}"
+          CURRENT_COMMIT="${{ github.sha }}"
+          
+          # Get list of changed .md files
+          if [ -n "$PREV_COMMIT" ] && [ "$PREV_COMMIT" != "0000000000000000000000000000000000000000" ]; then
+            CHANGED_FILES=$(git diff --name-only $PREV_COMMIT $CURRENT_COMMIT -- 'doc/**/*.md' 2>/dev/null || echo "")
+          else
+            # First commit or force push
+            CHANGED_FILES=$(git ls-files -- 'doc/**/*.md' 2>/dev/null || echo "")
+          fi
+          
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No .md files changed"
+            echo "files_to_process=" >> $GITHUB_OUTPUT
+          else
+            echo "Changed files:"
+            echo "$CHANGED_FILES"
+            # Convert to JSON array for Python
+            JSON_FILES=$(echo "$CHANGED_FILES" | python3 -c "import sys, json; files = [line.strip() for line in sys.stdin if line.strip()]; print(json.dumps(files))")
+            echo "files_to_process=$JSON_FILES" >> $GITHUB_OUTPUT
+          fi
         else
-          echo "Changed .md files:"
-          echo "$CHANGED_FILES"
-          # Convert to JSON array
-          JSON_ARRAY=$(echo "$CHANGED_FILES" | jq -R -s -c 'split("\n") | map(select(length > 0))')
-          echo "changed_files_json=$JSON_ARRAY" >> $GITHUB_OUTPUT
+          # Manual trigger - scope will be handled in Python script
+          echo "Manual trigger - scope will be handled in script"
+          echo "files_to_process=[]" >> $GITHUB_OUTPUT
         fi
     
-    - name:  Generate PDFs
+    - name: 🖨️ Generate PDFs
       id: generate
       env:
-        GENERATION_SCOPE: ${{ github.event.inputs.generation_scope }}
-        SPECIFIC_FILES: ${{ github.event.inputs.specific_files }}
-        CHANGED_FILES_JSON: ${{ steps.detect_changes.outputs.changed_files_json }}
+        GENERATION_SCOPE: ${{ github.event.inputs.generation_scope || 'all' }}
+        SPECIFIC_FILES: ${{ github.event.inputs.specific_files || '' }}
+        FILES_TO_PROCESS: ${{ steps.detect_files.outputs.files_to_process }}
         ACTOR: ${{ github.actor }}
-        TIMESTAMP: ${{ github.event.head_commit.timestamp || github.event.created_at }}
-        CUSTOM_WATERMARK: ${{ github.event.inputs.watermark_text }}
+        TIMESTAMP: ${{ github.event.head_commit.timestamp || github.event.created_at || format(time.now(), 'yyyy-MM-ddTHH:mm:ssZ') }}
         EVENT_NAME: ${{ github.event_name }}
       run: |
+        echo "Starting PDF generation..."
         echo "Event: $EVENT_NAME"
         echo "Scope: $GENERATION_SCOPE"
-        
-        # Create timestamp file to track what we generate
-        date > /tmp/generation_start.txt
+        echo "Actor: $ACTOR"
+        echo "Timestamp: $TIMESTAMP"
         
         # Run the PDF generation script
-        python scripts/generate_pdfs.py
+        python3 scripts/generate_pdfs.py
         
-        # Check if any PDFs were generated
+        # Check how many PDFs were generated
         if [ -f /tmp/generated_pdfs.txt ]; then
-          PDF_COUNT=$(wc -l < /tmp/generated_pdfs.txt)
+          PDF_COUNT=$(wc -l < /tmp/generated_pdfs.txt || echo 0)
           echo "Generated $PDF_COUNT PDF(s)"
           echo "pdf_count=$PDF_COUNT" >> $GITHUB_OUTPUT
         else
-          echo "No PDFs generated"
+          echo "No PDFs were generated"
           echo "pdf_count=0" >> $GITHUB_OUTPUT
         fi
     
-    - name:  Commit generated PDFs to repo
+    - name: 💾 Commit generated PDFs to repo
       if: steps.generate.outputs.pdf_count != '0'
       run: |
+        echo "Committing generated PDFs..."
+        
         # Configure git
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
-        # Add all generated PDFs (read from our tracking file)
+        # Check if there are any PDFs to commit
         if [ -f /tmp/generated_pdfs.txt ]; then
-          while read pdf_file; do
-            if [ -f "$pdf_file" ]; then
+          # Add each generated PDF file
+          while IFS= read -r pdf_file; do
+            if [ -n "$pdf_file" ] && [ -f "$pdf_file" ]; then
               git add "$pdf_file"
               echo "Added to git: $pdf_file"
             fi
           done < /tmp/generated_pdfs.txt
+          
+          # Create commit message
+          COMMIT_MSG="Auto-generated PDF(s)"
+          
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            COMMIT_MSG="Manually generated PDF(s)"
+          fi
+          
+          COMMIT_MSG="$COMMIT_MSG [skip ci]"
+          
+          # Commit and push
+          git commit -m "$COMMIT_MSG" || echo "No changes to commit"
+          git push
+        else
+          echo "No PDFs to commit"
         fi
-        
-        # Commit and push
-        COMMIT_MSG="Auto-generated PDF(s) [skip ci]"
-        
-        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-          COMMIT_MSG="Manually generated PDF(s) [skip ci]"
-        fi
-        
-        git commit -m "$COMMIT_MSG" || echo "No changes to commit"
-        git push
