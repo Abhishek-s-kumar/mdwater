@@ -18,11 +18,11 @@ on:
           - all
           - specific
       files:
-        description: 'Specific files (comma-separated, e.g., doc/guide.md,doc/api.md)'
+        description: 'Specific files (comma-separated)'
         required: false
         type: string
       watermark:
-        description: 'Custom watermark text'
+        description: 'Custom watermark'
         required: false
         type: string
 
@@ -42,27 +42,21 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        # REMOVED: cache: 'pip'  # This was causing the error
+        # NO CACHE LINE HERE - This was causing the error
     
     - name: Install dependencies
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-plain-generic
-        pip install --quiet PyPDF2 reportlab
+        pip install PyPDF2 reportlab
     
-    - name: Detect files to process
+    - name: Detect files
       id: detect
       env:
         EVENT_NAME: ${{ github.event_name }}
         SCOPE: ${{ github.event.inputs.scope }}
         SPECIFIC_FILES: ${{ github.event.inputs.files }}
       run: |
-        echo "=== File Detection Debug ==="
-        echo "Event: $EVENT_NAME"
-        echo "Scope: $SCOPE"
-        
-        FILES="[]"
-        
         if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
           if [ "$SCOPE" = "all" ]; then
             FILES=$(find doc -name "*.md" -type f | jq -R -s -c 'split("\n") | map(select(length > 0))')
@@ -70,20 +64,13 @@ jobs:
             FILES=$(echo "$SPECIFIC_FILES" | jq -R -s -c 'split(",") | map(select(length > 0))')
           fi
         else
-          # For push events - try multiple diff strategies
-          if git rev-parse HEAD~1 >/dev/null 2>&1; then
-            CHANGED=$(git diff --name-only HEAD~1 HEAD -- 'doc/*.md' 'doc/**/*.md' 2>/dev/null || echo "")
-          else
-            CHANGED=$(git diff --name-only $(git hash-object -t tree /dev/null) HEAD -- 'doc/*.md' 'doc/**/*.md' 2>/dev/null || echo "")
-          fi
-          
+          CHANGED=$(git diff --name-only HEAD~1 HEAD -- 'doc/*.md' 'doc/**/*.md' 2>/dev/null || echo "")
           if [ -n "$CHANGED" ]; then
             FILES=$(echo "$CHANGED" | jq -R -s -c 'split("\n") | map(select(length > 0))')
           fi
         fi
         
-        echo "Files: $FILES"
-        echo "files=$FILES" >> $GITHUB_OUTPUT
+        echo "files=${FILES:-[]}" >> $GITHUB_OUTPUT
     
     - name: Generate PDFs
       if: steps.detect.outputs.files != '[]'
@@ -92,15 +79,13 @@ jobs:
         FILES_JSON: ${{ steps.detect.outputs.files }}
         ACTOR: ${{ github.actor }}
         CUSTOM_WATERMARK: ${{ github.event.inputs.watermark }}
-      run: |
-        python scripts/generate_pdfs.py
-        
+      run: python scripts/generate_pdfs.py
+    
     - name: Commit PDFs
       if: steps.generate.outputs.pdf_count != '0'
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
-        
         git add doc/**/*.pdf
-        git commit -m "🤖 Auto-generate PDFs (${{ steps.generate.outputs.pdf_count }}) [skip ci]" || echo "No changes"
+        git commit -m "Auto-generate PDFs (${{ steps.generate.outputs.pdf_count }}) [skip ci]" || echo "No changes"
         git push
