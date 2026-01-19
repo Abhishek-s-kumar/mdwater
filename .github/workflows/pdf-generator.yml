@@ -1,14 +1,13 @@
 name: Generate PDF from Markdown
 
 on:
-  # 1. Automatic Trigger on .md file changes
+  # Automatic trigger on .md file changes
   push:
     paths:
-      - 'doc/**/*.md'  # Triggers only when .md files in /doc change [citation:2]
-    branches:
-      - main  # Or your default branch
-
-  # 2. Manual Trigger with Options
+      - 'doc/**/*.md'
+    branches: [main, master]
+  
+  # Manual trigger with options
   workflow_dispatch:
     inputs:
       generation_scope:
@@ -23,57 +22,110 @@ on:
         description: 'Specific .md files (comma-separated, e.g., doc/guide.md, doc/api.md)'
         required: false
         type: string
+      watermark_text:
+        description: 'Custom watermark text (leave empty for default: username + timestamp)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   generate-pdf:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Needed to commit the generated PDF back to the repo
-
+      contents: write
+    
     steps:
-      - name:  Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Fetches all history for changed files detection
-
-      - name:  Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name:  Install PDF generation dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y texlive-xetex texlive-fonts-recommended  # LaTeX engine for PDF
-          pip install markdown-it-py pandoc  # Markdown to LaTeX/PDF converter
-
-      - name:  Determine Markdown files to process
-        id: get_files
-        shell: python
-        env:
-          SCOPE: ${{ github.event.inputs.generation_scope }}
-          SPECIFIC: ${{ github.event.inputs.specific_files }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          # Python script to determine which .md files to process
-          # (Core logic explained in the implementation details below)
-          # This script sets the output `files_to_process`
-
-      - name:  Convert Markdown to PDF with Watermark
-        id: convert
-        env:
-          FILES_TO_PROCESS: ${{ steps.get_files.outputs.files_to_process }}
-          ACTOR: ${{ github.actor }}
-          TIMESTAMP: ${{ github.event.head_commit.timestamp || github.event.created_at }}
-        run: |
-          # Script to process each file
-          # (Core logic explained in the implementation details below)
-
-      - name:  Commit generated PDFs to repository
-        if: steps.convert.outputs.files_processed == 'true'
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add doc/**/*.pdf  # Add all new PDFs
-          git commit -m "Auto-generated PDF(s) from Markdown [skip ci]" || echo "No changes to commit"
-          git push
+    - name:  Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Get all history for file comparisons
+    
+    - name:  Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name:  Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-latex-extra
+        pip install PyPDF2 reportlab
+    
+    - name:  Detect changed .md files (for push events)
+      id: detect_changes
+      if: github.event_name == 'push'
+      run: |
+        # Get list of changed .md files in doc directory
+        echo "Previous commit: ${{ github.event.before }}"
+        echo "Current commit: ${{ github.sha }}"
+        
+        # Get changed files using git diff
+        CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} -- 'doc/**/*.md' 2>/dev/null || git diff --name-only HEAD~1 HEAD -- 'doc/**/*.md')
+        
+        if [ -z "$CHANGED_FILES" ]; then
+          echo "No .md files changed in doc directory"
+          echo "changed_files_json=[]" >> $GITHUB_OUTPUT
+        else
+          echo "Changed .md files:"
+          echo "$CHANGED_FILES"
+          # Convert to JSON array
+          JSON_ARRAY=$(echo "$CHANGED_FILES" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "changed_files_json=$JSON_ARRAY" >> $GITHUB_OUTPUT
+        fi
+    
+    - name:  Generate PDFs
+      id: generate
+      env:
+        GENERATION_SCOPE: ${{ github.event.inputs.generation_scope }}
+        SPECIFIC_FILES: ${{ github.event.inputs.specific_files }}
+        CHANGED_FILES_JSON: ${{ steps.detect_changes.outputs.changed_files_json }}
+        ACTOR: ${{ github.actor }}
+        TIMESTAMP: ${{ github.event.head_commit.timestamp || github.event.created_at }}
+        CUSTOM_WATERMARK: ${{ github.event.inputs.watermark_text }}
+        EVENT_NAME: ${{ github.event_name }}
+      run: |
+        echo "Event: $EVENT_NAME"
+        echo "Scope: $GENERATION_SCOPE"
+        
+        # Create timestamp file to track what we generate
+        date > /tmp/generation_start.txt
+        
+        # Run the PDF generation script
+        python scripts/generate_pdfs.py
+        
+        # Check if any PDFs were generated
+        if [ -f /tmp/generated_pdfs.txt ]; then
+          PDF_COUNT=$(wc -l < /tmp/generated_pdfs.txt)
+          echo "Generated $PDF_COUNT PDF(s)"
+          echo "pdf_count=$PDF_COUNT" >> $GITHUB_OUTPUT
+        else
+          echo "No PDFs generated"
+          echo "pdf_count=0" >> $GITHUB_OUTPUT
+        fi
+    
+    - name:  Commit generated PDFs to repo
+      if: steps.generate.outputs.pdf_count != '0'
+      run: |
+        # Configure git
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        
+        # Add all generated PDFs (read from our tracking file)
+        if [ -f /tmp/generated_pdfs.txt ]; then
+          while read pdf_file; do
+            if [ -f "$pdf_file" ]; then
+              git add "$pdf_file"
+              echo "Added to git: $pdf_file"
+            fi
+          done < /tmp/generated_pdfs.txt
+        fi
+        
+        # Commit and push
+        COMMIT_MSG="Auto-generated PDF(s) [skip ci]"
+        
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          COMMIT_MSG="Manually generated PDF(s) [skip ci]"
+        fi
+        
+        git commit -m "$COMMIT_MSG" || echo "No changes to commit"
+        git push
