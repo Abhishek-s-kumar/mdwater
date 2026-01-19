@@ -28,7 +28,7 @@ def add_watermark_to_pdf(input_pdf_path, output_pdf_path, watermark_text):
         packet = BytesIO()
         
         # **OPTIMAL FONT SIZE**: 1/15th of page width (larger, but not overwhelming)
-        font_size = min(page_width / 20, 60)  # Cap at 60pt
+        font_size = min(page_width / 26, 60)  # Cap at 60pt
         
         can = canvas.Canvas(packet, pagesize=(page_width, page_height))
         
