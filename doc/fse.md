@@ -1,4 +1,2 @@
-# hello
-# bye
-
+# Document
 # next
