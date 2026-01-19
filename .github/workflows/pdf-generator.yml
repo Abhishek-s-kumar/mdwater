@@ -36,13 +36,13 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 2  # Minimal but sufficient for diff
+        fetch-depth: 2
     
     - name: Setup Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        cache: 'pip'
+        # REMOVED: cache: 'pip'  # This was causing the error
     
     - name: Install dependencies
       run: |
@@ -72,10 +72,8 @@ jobs:
         else
           # For push events - try multiple diff strategies
           if git rev-parse HEAD~1 >/dev/null 2>&1; then
-            # Standard approach
             CHANGED=$(git diff --name-only HEAD~1 HEAD -- 'doc/*.md' 'doc/**/*.md' 2>/dev/null || echo "")
           else
-            # Fallback for shallow clones or initial commits
             CHANGED=$(git diff --name-only $(git hash-object -t tree /dev/null) HEAD -- 'doc/*.md' 'doc/**/*.md' 2>/dev/null || echo "")
           fi
           
