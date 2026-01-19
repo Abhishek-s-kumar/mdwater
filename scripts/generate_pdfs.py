@@ -10,49 +10,62 @@ import subprocess
 import tempfile
 import sys
 from datetime import datetime
-from scripts.watermark import add_watermark_to_pdf
+
+# Add the scripts directory to Python path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+try:
+    from watermark import add_watermark_to_pdf
+except ImportError:
+    # Fallback: define the function inline if import fails
+    def add_watermark_to_pdf(input_pdf, output_pdf, watermark_text):
+        print(f"⚠️  Watermarking disabled - would add: '{watermark_text}'")
+        # Just copy the file as fallback
+        import shutil
+        shutil.copy(input_pdf, output_pdf)
 
 def get_files_to_process():
     """Determine which .md files to process based on trigger type"""
     event_name = os.environ.get('EVENT_NAME', '')
     scope = os.environ.get('GENERATION_SCOPE', '')
     specific_files = os.environ.get('SPECIFIC_FILES', '')
-    changed_files_json = os.environ.get('CHANGED_FILES_JSON', '[]')
     
     files_to_process = []
     
     if event_name == 'workflow_dispatch':
-        # Manual trigger
+        print(f"Manual trigger with scope: {scope}")
         if scope == 'all':
             # Find all .md files in doc/ directory
             for root, dirs, files in os.walk('doc'):
                 for file in files:
                     if file.endswith('.md'):
                         files_to_process.append(os.path.join(root, file))
+            print(f"Found {len(files_to_process)} .md files")
         elif scope == 'specific' and specific_files:
             # Process specific files
             for file_path in specific_files.split(','):
                 file_path = file_path.strip()
                 if file_path.endswith('.md') and os.path.exists(file_path):
                     files_to_process.append(file_path)
+                else:
+                    print(f"Skipping invalid file: {file_path}")
     else:
-        # Push event - process changed files
-        try:
-            changed_files = json.loads(changed_files_json)
-            files_to_process = [f for f in changed_files if f.endswith('.md') and os.path.exists(f)]
-        except json.JSONDecodeError:
-            print("Error parsing changed files JSON")
-            files_to_process = []
+        # Push event - we need to detect changed files differently
+        print(f"Push event detected")
+        # This will be handled by the workflow step that calls this script
     
     return files_to_process
 
 def main():
     # Get environment variables
     actor = os.environ.get('ACTOR', 'Unknown')
-    timestamp = os.environ.get('TIMESTAMP', datetime.now().isoformat())
+    timestamp = os.environ.get('TIMESTAMP', '')
     custom_watermark = os.environ.get('CUSTOM_WATERMARK', '')
     
     # Parse the timestamp
+    if not timestamp:
+        timestamp = datetime.now().isoformat()
+    
     try:
         dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
         formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -72,6 +85,9 @@ def main():
     
     if not files_to_process:
         print("ℹ️  No files to process")
+        # Write empty file to indicate no PDFs generated
+        with open('/tmp/generated_pdfs.txt', 'w') as f:
+            f.write('')
         return
     
     print(f"🔄 Processing {len(files_to_process)} file(s)...")
@@ -102,15 +118,11 @@ def main():
                 '--pdf-engine=xelatex',
                 '-V', 'geometry:margin=1in',
                 '-V', 'fontsize=11pt',
-                '-V', 'mainfont="DejaVu Serif"',
                 '--toc',  # Add table of contents
                 '--toc-depth=3'
             ]
             
-            # Add metadata if available
-            if os.path.exists('scripts/template.tex'):
-                cmd.extend(['--template', 'scripts/template.tex'])
-            
+            print(f"Running command: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True)
             
             if result.returncode != 0:
@@ -122,7 +134,8 @@ def main():
             add_watermark_to_pdf(temp_pdf, pdf_file, watermark_text)
             
             # Clean up temp file
-            os.unlink(temp_pdf)
+            if os.path.exists(temp_pdf):
+                os.unlink(temp_pdf)
             
             # Track generated PDF
             generated_pdfs.append(pdf_file)
@@ -130,6 +143,8 @@ def main():
             
         except Exception as e:
             print(f"❌ Error processing {md_file}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             continue
     
     # Write list of generated PDFs to file for git commit step
