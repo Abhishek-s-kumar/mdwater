@@ -44,27 +44,26 @@ jobs:
         sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended
         pip install PyPDF2 reportlab
     
-    - name: 🔍 Detect files and get commit author
+    - name: 🔍 Detect files and get REAL commit author
       id: detect
       run: |
         mkdir -p generated-pdfs
         
         echo "Event: ${{ github.event_name }}"
         
-        # Get the actual last commit author who modified any .md file
+        # Get the actual last commit author who modified any .md file (FIXED)
         if [ "${{ github.event_name }}" == "push" ]; then
-          # Find the most recent commit that touched any .md file in doc/
-          # Format: "hash author_name file1 file2..."
-          LAST_MD_INFO=$(git log --name-only --pretty=format:"%h %an" -- doc/**/*.md 2>/dev/null | head -1)
-          LAST_MD_COMMIT=$(echo "$LAST_MD_INFO" | cut -d' ' -f1)
-          COMMIT_AUTHOR=$(echo "$LAST_MD_INFO" | cut -d' ' -f2)
+          # FIX: Use proper git log format and quoted pathspec
+          # %an = author name, %H = full hash
+          LAST_MD_COMMIT=$(git log -1 --pretty=format:"%H" -- 'doc/*.md' 'doc/**/*.md' 2>/dev/null)
           
-          # Fallback if no .md history
-          if [ -z "$COMMIT_AUTHOR" ]; then
-            COMMIT_AUTHOR="${{ github.actor }}"
-            echo "No .md commit history found, using actor: $COMMIT_AUTHOR"
-          else
+          if [ -n "$LAST_MD_COMMIT" ]; then
+            COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an" "$LAST_MD_COMMIT")
             echo "Found last .md commit: $LAST_MD_COMMIT by $COMMIT_AUTHOR"
+          else
+            # Fallback: get author of current commit
+            COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
+            echo "No .md history, using current commit author: $COMMIT_AUTHOR"
           fi
           echo "commit_author=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
         else
