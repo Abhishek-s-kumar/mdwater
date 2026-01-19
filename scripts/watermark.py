@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Add watermark to PDF files using PyPDF2 and reportlab
+Add watermark to PDF files - places watermark diagonally across pages
 """
 
 import os
 from PyPDF2 import PdfReader, PdfWriter
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.colors import gray
+from reportlab.lib.utils import simpleSplit
 from io import BytesIO
 
 def add_watermark_to_pdf(input_pdf_path, output_pdf_path, watermark_text, 
-                        font_size=40, opacity=0.2, angle=45):
+                        font_size=40, opacity=0.15, angle=45):
     """
-    Add a text watermark to a PDF file
+    Add a diagonal text watermark to a PDF file
     
     Args:
         input_pdf_path: Path to input PDF
@@ -34,30 +35,41 @@ def add_watermark_to_pdf(input_pdf_path, output_pdf_path, watermark_text,
         
         # Create a temporary watermark PDF with reportlab
         packet = BytesIO()
-        can = canvas.Canvas(packet, pagesize=letter)
-        
-        # Set watermark properties
-        can.setFont("Helvetica", font_size)
-        can.setFillColor(gray, alpha=opacity)
         
         # Get page dimensions
         page_width = float(page.mediabox.width)
         page_height = float(page.mediabox.height)
+        
+        # Use appropriate page size
+        if page_width > page_height:
+            pagesize = (page_width, page_height)
+        else:
+            pagesize = (page_height, page_width)
+        
+        can = canvas.Canvas(packet, pagesize=pagesize)
+        
+        # Set watermark properties
+        can.setFont("Helvetica-Bold", font_size)
+        can.setFillColor(gray, alpha=opacity)
         
         # Calculate center position
         can.saveState()
         can.translate(page_width / 2, page_height / 2)
         can.rotate(angle)
         
-        # Draw watermark text (centered and repeated for coverage)
-        text_width = can.stringWidth(watermark_text, "Helvetica", font_size)
+        # Calculate text width
+        text_width = can.stringWidth(watermark_text, "Helvetica-Bold", font_size)
         
-        # Create a grid of watermarks for better coverage
-        for y in range(-2, 3):
-            for x in range(-2, 3):
-                offset_x = x * (text_width + 100)
-                offset_y = y * (font_size * 2 + 50)
-                can.drawString(offset_x - text_width/2, offset_y, watermark_text)
+        # Draw watermark multiple times for full page coverage
+        # Create a grid pattern
+        rows = 5
+        cols = 3
+        
+        for row in range(-rows, rows + 1):
+            for col in range(-cols, cols + 1):
+                x_offset = col * (text_width + 200)  # Horizontal spacing
+                y_offset = row * (font_size * 3)     # Vertical spacing
+                can.drawString(x_offset - text_width/2, y_offset, watermark_text)
         
         can.restoreState()
         can.save()
